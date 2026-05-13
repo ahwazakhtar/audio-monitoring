@@ -4,7 +4,7 @@ import NavBar from '../components/NavBar.jsx'
 import AudioPlayer from '../components/AudioPlayer.jsx'
 import ObservationPanel from '../components/ObservationPanel.jsx'
 import SectionVerifier from '../components/SectionVerifier.jsx'
-import { getObservation, getAudioFiles, saveReview, releaseClaim, audioStreamUrl } from '../api/client.js'
+import { getObservation, getAudioFiles, getSession, saveReview, releaseClaim, audioStreamUrl } from '../api/client.js'
 
 // ─── Section configuration ──────────────────────────────────────────────────
 // 18 sections grouped by subject. Customize item lists to match your survey variables.
@@ -192,7 +192,10 @@ export default function ReviewScreen() {
     setLoading(true)
     setError('')
     try {
-      const filesRes = await getAudioFiles()
+      const [filesRes, sessionRes] = await Promise.all([
+        getAudioFiles(),
+        getSession(),
+      ])
       const files = filesRes.data || []
       const file = files.find(f => f.audio_file_id === fileId)
       if (!file) {
@@ -208,8 +211,12 @@ export default function ReviewScreen() {
       }
 
       // Restore draft if present; otherwise all sections stay selected
-      if (file.draft_data) {
-        const draft = typeof file.draft_data === 'string' ? JSON.parse(file.draft_data) : file.draft_data
+      const draftRecord = (sessionRes.data?.drafts || []).find(
+        d => d.unique_id_calc === file.unique_id_calc
+      )
+      const draftRaw = draftRecord?.draft_data ?? file.draft_data
+      if (draftRaw) {
+        const draft = typeof draftRaw === 'string' ? JSON.parse(draftRaw) : draftRaw
         if (draft.sections_reviewed?.length) setSelectedSections(draft.sections_reviewed)
         if (draft.verdicts) setVerdicts(draft.verdicts)
         if (draft.section_comments) setSectionComments(draft.section_comments)
