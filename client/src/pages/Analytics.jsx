@@ -10,10 +10,33 @@ import {
   ResponsiveContainer,
   Cell,
 } from 'recharts'
+import { useSearchParams } from 'react-router-dom'
 import NavBar from '../components/NavBar.jsx'
-import { getAnalytics } from '../api/client.js'
+import { getAnalytics, getInstruments } from '../api/client.js'
 
 const COMPLIANCE_THRESHOLD = 85
+const DEFAULT_INSTRUMENT = 'egra_egma'
+
+function InstrumentPicker({ instruments, value, onChange }) {
+  if (instruments.length < 2) return null
+  return (
+    <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-lg p-1">
+      {instruments.map(i => (
+        <button
+          key={i.key}
+          onClick={() => onChange(i.key)}
+          className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+            value === i.key
+              ? 'bg-indigo-600 text-white'
+              : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          {i.label}
+        </button>
+      ))}
+    </div>
+  )
+}
 
 function StatCard({ label, value, sub, colorClass }) {
   return (
@@ -60,16 +83,27 @@ function getBarColor(value) {
 }
 
 export default function Analytics() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const instrument = searchParams.get('instrument') || DEFAULT_INSTRUMENT
+  const [instruments, setInstruments] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [data, setData] = useState(null)
+
+  function handleInstrumentChange(key) {
+    setSearchParams({ instrument: key })
+  }
+
+  useEffect(() => {
+    getInstruments().then(res => setInstruments(res.data || [])).catch(() => {})
+  }, [])
 
   useEffect(() => {
     async function load() {
       setLoading(true)
       setError('')
       try {
-        const res = await getAnalytics()
+        const res = await getAnalytics(instrument)
         setData(res.data)
       } catch (err) {
         if (err.response?.status !== 401) {
@@ -80,7 +114,7 @@ export default function Analytics() {
       }
     }
     load()
-  }, [])
+  }, [instrument])
 
   if (loading) {
     return (
@@ -102,7 +136,7 @@ export default function Analytics() {
   const byEnumerator = data?.by_enumerator || []
   const bySection = data?.by_section || []
   const byReviewer = data?.by_reviewer || []
-  const flagged = data?.flagged || []
+  const flagged = data?.flagged_observations || []
   const totalReviewed = data?.total_reviewed ?? 0
   const avgCompliance = data?.avg_compliance ?? null
   const flaggedCount = data?.flagged_count ?? flagged.length
@@ -113,11 +147,14 @@ export default function Analytics() {
       <main className="flex-1 max-w-screen-2xl mx-auto w-full px-4 py-6">
 
         {/* Page title */}
-        <div className="mb-6">
-          <h1 className="text-2xl font-bold text-slate-800">Analytics Dashboard</h1>
-          <p className="text-sm text-slate-500 mt-0.5">
-            Survey compliance summary across reviewed audio files
-          </p>
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-800">Analytics Dashboard</h1>
+            <p className="text-sm text-slate-500 mt-0.5">
+              Survey compliance summary across reviewed audio files
+            </p>
+          </div>
+          <InstrumentPicker instruments={instruments} value={instrument} onChange={handleInstrumentChange} />
         </div>
 
         {error && (
@@ -223,7 +260,7 @@ export default function Analytics() {
                 >
                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                   <XAxis
-                    dataKey="section_label"
+                    dataKey="label"
                     tick={{ fontSize: 10, fill: '#64748b' }}
                     angle={-35}
                     textAnchor="end"
@@ -341,10 +378,9 @@ export default function Analytics() {
                 </thead>
                 <tbody className="divide-y divide-slate-50">
                   {flagged.map((row, idx) => {
-                    const pct = Math.round(row.compliance_pct || 0)
-                    const reviewDate = row.review_date || row.submitted_at
-                    const dateStr = reviewDate
-                      ? new Date(reviewDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+                    const pct = Math.round(row.overall_compliance_pct || 0)
+                    const dateStr = row.review_timestamp
+                      ? new Date(row.review_timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
                       : '—'
                     return (
                       <tr key={idx} className="hover:bg-red-50 transition-colors">
@@ -361,7 +397,7 @@ export default function Analytics() {
                           <ComplianceBar value={pct} />
                         </td>
                         <td className="px-4 py-3 text-xs text-slate-600">
-                          {row.reviewer_username || row.reviewer || '—'}
+                          {row.reviewer || '—'}
                         </td>
                         <td className="px-4 py-3 text-xs text-slate-500">
                           {dateStr}

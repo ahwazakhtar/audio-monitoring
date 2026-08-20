@@ -3,17 +3,20 @@
 const express = require('express');
 const authMiddleware = require('../middleware/auth');
 const { getAllObservations, getObservation } = require('../services/csvLoader');
+const { getInstrument } = require('../config/instruments');
 
 const router = express.Router();
 
 /**
- * GET /api/observations
+ * GET /api/observations?instrument=
  * Auth required.
- * Returns an array of observation summary objects.
+ * Returns an array of observation summary objects for the given instrument
+ * (defaults to EGRA/EGMA if omitted, for back-compat).
  */
 router.get('/', authMiddleware, async (req, res) => {
   try {
-    const observations = await getAllObservations();
+    const instrument = getInstrument(req.query.instrument);
+    const observations = await getAllObservations(instrument.key);
     return res.json(observations);
   } catch (err) {
     console.error('GET /observations error:', err);
@@ -22,14 +25,17 @@ router.get('/', authMiddleware, async (req, res) => {
 });
 
 /**
- * GET /api/observations/:id
+ * GET /api/observations/:id?instrument=&segment=
  * Auth required.
- * Returns the full CSV row for the given unique_id_calc.
+ * Returns the full CSV row for the given unique_id_calc. `segment` (the
+ * audio_filename_segment of the file being reviewed) disambiguates when
+ * unique_id_calc isn't unique within the instrument's CSV.
  */
 router.get('/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    const observation = await getObservation(id);
+    const instrument = getInstrument(req.query.instrument);
+    const observation = await getObservation(instrument.key, id, req.query.segment || null);
 
     if (!observation) {
       return res.status(404).json({ error: `Observation not found: ${id}` });

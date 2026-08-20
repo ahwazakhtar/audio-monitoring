@@ -4,7 +4,7 @@ const express = require('express');
 const authMiddleware = require('../middleware/auth');
 const { getCompletedReviews } = require('../services/googleSheets');
 const { getAllObservations } = require('../services/csvLoader');
-const { SECTIONS } = require('../config/sections');
+const { getInstrument } = require('../config/instruments');
 
 const router = express.Router();
 
@@ -14,16 +14,24 @@ function safeParseJSON(str, fallback) {
 }
 
 /**
- * GET /api/analytics
+ * GET /api/analytics?instrument=
  * Auth required.
- * Returns aggregate stats across all completed reviews, cross-referenced with CSV data.
+ * Returns aggregate stats across all completed reviews for one instrument,
+ * cross-referenced with that instrument's CSV data (defaults to EGRA/EGMA
+ * if omitted, for back-compat).
  */
 router.get('/', authMiddleware, async (req, res) => {
   try {
-    const [reviews, observations] = await Promise.all([
+    const instrument = getInstrument(req.query.instrument);
+    const SECTIONS = instrument.sections;
+
+    const [allReviews, observations] = await Promise.all([
       getCompletedReviews(),
-      Promise.resolve(getAllObservations()),
+      getAllObservations(instrument.key),
     ]);
+
+    // The Reviews tab is shared across instruments — scope to this one.
+    const reviews = allReviews.filter((r) => (r.instrument || 'egra_egma') === instrument.key);
 
     // Build observation lookup by unique_id_calc
     const obsMap = new Map(observations.map((o) => [o.unique_id_calc, o]));

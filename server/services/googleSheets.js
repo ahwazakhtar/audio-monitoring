@@ -10,6 +10,9 @@ const REVIEWS_TAB = 'Reviews';
 const CLAIMS_TAB = 'Claims';
 
 // Column definitions (order matters — this is what gets written to the sheet)
+// `instrument` is appended (not inserted) so existing data rows stay aligned
+// with the new header; legacy rows written before this column existed are
+// treated as 'egra_egma' wherever they're read back (see getSessionState).
 const REVIEWS_HEADERS = [
   'review_id',
   'unique_id_calc',
@@ -23,6 +26,7 @@ const REVIEWS_HEADERS = [
   'overall_comment',
   'verdicts_json',
   'comments_json',
+  'instrument',
 ];
 
 const CLAIMS_HEADERS = [
@@ -33,6 +37,7 @@ const CLAIMS_HEADERS = [
   'claimed_at',
   'status',
   'draft_data_json', // extra column for draft state
+  'instrument',
 ];
 
 // ---------------------------------------------------------------------------
@@ -142,8 +147,12 @@ async function ensureSheetSetup() {
 
   for (const { name, headers } of tabConfig) {
     const rows = await readTab(sheets, name);
-    if (rows.length === 0 || rows[0][0] !== headers[0]) {
-      // Write header row at A1
+    // Full-array comparison — a positional check (e.g. rows[0][0] !== headers[0])
+    // would never notice a trailing column (like `instrument`) being added.
+    if (rows.length === 0 || JSON.stringify(rows[0]) !== JSON.stringify(headers)) {
+      // Write header row at A1. Existing data rows are untouched — appending
+      // a header is safe; it just means those rows read back with the new
+      // trailing column(s) empty until rewritten.
       await sheets.spreadsheets.values.update({
         spreadsheetId: SHEET_ID,
         range: `${name}!A1`,
@@ -176,8 +185,10 @@ async function getSessionState() {
     .filter((r) => r.status === 'complete')
     .map((r) => ({
       unique_id_calc: r.unique_id_calc,
+      audio_filename: r.audio_filename,
       reviewer: r.reviewer,
       review_timestamp: r.review_timestamp,
+      instrument: r.instrument || 'egra_egma', // back-compat for rows written before this column existed
     }));
 
   const claimed = claims
@@ -188,6 +199,7 @@ async function getSessionState() {
       audio_filename: c.audio_filename,
       audio_file_id: c.audio_file_id,
       claimed_at: c.claimed_at,
+      instrument: c.instrument || 'egra_egma',
     }));
 
   const drafts = claims
@@ -198,6 +210,7 @@ async function getSessionState() {
       audio_filename: c.audio_filename,
       audio_file_id: c.audio_file_id,
       claimed_at: c.claimed_at,
+      instrument: c.instrument || 'egra_egma',
       draft_data: c.draft_data_json ? (() => {
         try { return JSON.parse(c.draft_data_json); } catch { return null; }
       })() : null,
@@ -239,15 +252,19 @@ async function appendReview(reviewData) {
 }
 
 /**
- * Finds the 1-based row index of a claim by unique_id_calc.
+ * Finds the 1-based row index of a claim by audio_filename (the true
+ * per-submission key — unique_id_calc has confirmed duplicate groups within
+ * a single instrument's CSV, so it can't be used to identify one claim).
  * Returns -1 if not found. Accounts for the header row (row 1 = headers, row 2 = first data row).
  */
-async function findClaimRowIndex(sheets, unique_id_calc) {
+async function findClaimRowIndex(sheets, audio_filename) {
   const rows = await readTab(sheets, CLAIMS_TAB);
   if (rows.length < 2) return -1;
+  const colIndex = rows[0].indexOf('audio_filename');
+  if (colIndex === -1) return -1;
   // rows[0] = headers, rows[1..] = data; sheet row index = array index + 1
   for (let i = 1; i < rows.length; i++) {
-    if (rows[i][0] === unique_id_calc) {
+    if (rows[i][colIndex] === audio_filename) {
       return i + 1; // 1-based sheet row
     }
   }
@@ -256,11 +273,11 @@ async function findClaimRowIndex(sheets, unique_id_calc) {
 
 /**
  * Upserts a claim row in the Claims tab.
- * If a row with the same unique_id_calc exists, update it; otherwise append.
+ * If a row with the same audio_filename exists, update it; otherwise append.
  */
 async function upsertClaim(claimData) {
   const sheets = await getSheetsClient();
-  const existingRowIndex = await findClaimRowIndex(sheets, claimData.unique_id_calc);
+  const existingRowIndex = await findClaimRowIndex(sheets, claimData.audio_filename);
   const row = objectToRow(claimData, CLAIMS_HEADERS);
 
   if (existingRowIndex === -1) {
@@ -285,20 +302,20 @@ async function upsertClaim(claimData) {
 }
 
 /**
- * Returns a single claim object by unique_id_calc, or null if not found.
+ * Returns a single claim object by audio_filename, or null if not found.
  */
-async function getClaim(unique_id_calc) {
+async function getClaim(audio_filename) {
   const sheets = await getSheetsClient();
   const rows = await readTab(sheets, CLAIMS_TAB);
   const objects = rowsToObjects(rows);
-  return objects.find((c) => c.unique_id_calc === unique_id_calc) || null;
+  return objects.find((c) => c.audio_filename === audio_filename) || null;
 }
 
 /**
- * Deletes a claim row from the Claims tab by unique_id_calc.
+ * Deletes a claim row from the Claims tab by audio_filename.
  * Returns true if deleted, false if not found.
  */
-async function deleteClaim(unique_id_calc) {
+async function deleteClaim(audio_filename) {
   const sheets = await getSheetsClient();
 
   // Get the sheet's internal ID (sheetId) for the Claims tab
@@ -307,7 +324,7 @@ async function deleteClaim(unique_id_calc) {
   if (!claimsSheet) return false;
 
   const claimsSheetId = claimsSheet.sheetId;
-  const rowIndex = await findClaimRowIndex(sheets, unique_id_calc);
+  const rowIndex = await findClaimRowIndex(sheets, audio_filename);
   if (rowIndex === -1) return false;
 
   // Delete the row using batchUpdate (0-based start index)

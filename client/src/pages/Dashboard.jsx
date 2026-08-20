@@ -1,7 +1,30 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import NavBar from '../components/NavBar.jsx'
-import { getSession, getAudioFiles, getObservations, claimFile } from '../api/client.js'
+import { getSession, getAudioFiles, getObservations, claimFile, getInstruments, refreshInstrumentData } from '../api/client.js'
+
+const DEFAULT_INSTRUMENT = 'egra_egma'
+
+function InstrumentPicker({ instruments, value, onChange }) {
+  if (instruments.length < 2) return null
+  return (
+    <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-lg p-1">
+      {instruments.map(i => (
+        <button
+          key={i.key}
+          onClick={() => onChange(i.key)}
+          className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+            value === i.key
+              ? 'bg-indigo-600 text-white'
+              : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          {i.label}
+        </button>
+      ))}
+    </div>
+  )
+}
 
 function StatCard({ label, value, color }) {
   const colorMap = {
@@ -82,6 +105,9 @@ function MatchedObservation({ file }) {
 
 export default function Dashboard() {
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const instrument = searchParams.get('instrument') || DEFAULT_INSTRUMENT
+  const [instruments, setInstruments] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [audioFiles, setAudioFiles] = useState([])
@@ -92,8 +118,33 @@ export default function Dashboard() {
   const [filterReviewer, setFilterReviewer] = useState('')
   const [filterDateFrom, setFilterDateFrom] = useState('')
   const [filterDateTo, setFilterDateTo] = useState('')
+  const [syncing, setSyncing] = useState(false)
+  const [syncMessage, setSyncMessage] = useState('')
 
   const username = localStorage.getItem('username') || ''
+
+  useEffect(() => {
+    getInstruments().then(res => setInstruments(res.data || [])).catch(() => {})
+  }, [])
+
+  function handleInstrumentChange(key) {
+    setSearchParams({ instrument: key })
+  }
+
+  async function handleSyncData() {
+    setSyncing(true)
+    setError('')
+    setSyncMessage('')
+    try {
+      const res = await refreshInstrumentData(instrument)
+      setSyncMessage(`Synced ${res.data.observations} observations from Drive.`)
+      await loadData()
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to sync data from Drive.')
+    } finally {
+      setSyncing(false)
+    }
+  }
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -101,22 +152,27 @@ export default function Dashboard() {
     try {
       const [sessionRes, filesRes, obsRes] = await Promise.all([
         getSession(),
-        getAudioFiles(),
-        getObservations(),
+        getAudioFiles(instrument),
+        getObservations(instrument),
       ])
       const session = sessionRes.data
       setCurrentUser(session)
       setObservations(obsRes.data || [])
 
-      // Merge session state into each audio file
-      const completedMap = new Map((session.completed || []).map(c => [c.unique_id_calc, c]))
-      const claimedMap = new Map((session.claimed || []).map(c => [c.unique_id_calc, c]))
-      const draftMap = new Map((session.drafts || []).map(d => [d.unique_id_calc, d]))
+      // Merge session state into each audio file. Keyed by audio_filename —
+      // the true per-submission key (unique_id_calc has confirmed duplicate
+      // groups within a CSV, so it can't reliably identify one recording).
+      // GET /api/session returns state for every instrument (the Reviews/Claims
+      // tabs are shared) — scope to the instrument currently being viewed so a
+      // physical file reviewed under one instrument doesn't show as reviewed
+      // under another.
+      const inThisInstrument = (entry) => (entry.instrument || 'egra_egma') === instrument
+      const completedMap = new Map((session.completed || []).filter(inThisInstrument).map(c => [c.audio_filename, c]))
+      const claimedMap = new Map((session.claimed || []).filter(inThisInstrument).map(c => [c.audio_filename, c]))
+      const draftMap = new Map((session.drafts || []).filter(inThisInstrument).map(d => [d.audio_filename, d]))
 
       const enriched = (filesRes.data || []).map(file => {
-        const uid = file.unique_id_calc
-        if (!uid) return { ...file, reviewed: false, claimed_by: null }
-        const completedReview = completedMap.get(uid)
+        const completedReview = completedMap.get(file.audio_filename)
         if (completedReview) return {
           ...file,
           reviewed: true,
@@ -124,7 +180,7 @@ export default function Dashboard() {
           reviewer: file.reviewer || completedReview.reviewer,
           review_timestamp: file.review_timestamp || completedReview.review_timestamp,
         }
-        const claim = claimedMap.get(uid) || draftMap.get(uid)
+        const claim = claimedMap.get(file.audio_filename) || draftMap.get(file.audio_filename)
         if (claim) return { ...file, reviewed: false, claimed_by: claim.reviewer, claimed_by_username: claim.reviewer }
         return { ...file, reviewed: false, claimed_by: null }
       })
@@ -136,7 +192,7 @@ export default function Dashboard() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [instrument])
 
   useEffect(() => {
     loadData()
@@ -145,8 +201,8 @@ export default function Dashboard() {
   async function handleClaimAndReview(file) {
     setClaimingId(file.audio_file_id)
     try {
-      await claimFile(file.unique_id_calc, file.audio_filename, file.audio_file_id)
-      navigate(`/review/${file.audio_file_id}`)
+      await claimFile(file.unique_id_calc, file.audio_filename, file.audio_file_id, instrument)
+      navigate(`/review/${file.audio_file_id}?instrument=${instrument}`)
     } catch (err) {
       const msg = err.response?.data?.message || 'Failed to claim file. It may have been claimed by someone else.'
       setError(msg)
@@ -157,11 +213,11 @@ export default function Dashboard() {
   }
 
   function handleContinueReview(file) {
-    navigate(`/review/${file.audio_file_id}`)
+    navigate(`/review/${file.audio_file_id}?instrument=${instrument}`)
   }
 
   function handleViewReview(file) {
-    navigate(`/review/${file.audio_file_id}`)
+    navigate(`/review/${file.audio_file_id}?instrument=${instrument}`)
   }
 
   // Determine status of each audio file
@@ -239,15 +295,29 @@ export default function Dashboard() {
               Audio review queue for survey compliance
             </p>
           </div>
-          <button
-            onClick={loadData}
-            className="flex items-center gap-2 px-3 py-2 text-sm text-slate-600 border border-slate-300 rounded-lg hover:bg-white transition-colors"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-            </svg>
-            Refresh
-          </button>
+          <div className="flex items-center gap-3">
+            <InstrumentPicker instruments={instruments} value={instrument} onChange={handleInstrumentChange} />
+            <button
+              onClick={handleSyncData}
+              disabled={syncing}
+              title="Download the latest survey data export from Google Drive"
+              className="flex items-center gap-2 px-3 py-2 text-sm text-slate-600 border border-slate-300 rounded-lg hover:bg-white disabled:opacity-50 transition-colors"
+            >
+              <svg className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 8h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              {syncing ? 'Syncing...' : 'Sync Data from Drive'}
+            </button>
+            <button
+              onClick={loadData}
+              className="flex items-center gap-2 px-3 py-2 text-sm text-slate-600 border border-slate-300 rounded-lg hover:bg-white transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+              Refresh
+            </button>
+          </div>
         </div>
 
         {error && (
@@ -257,6 +327,16 @@ export default function Dashboard() {
             </svg>
             {error}
             <button onClick={() => setError('')} className="ml-auto text-red-500 hover:text-red-700">✕</button>
+          </div>
+        )}
+
+        {syncMessage && (
+          <div className="mb-4 flex items-center gap-2 bg-green-50 border border-green-200 text-green-700 rounded-lg px-4 py-3 text-sm">
+            <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            {syncMessage}
+            <button onClick={() => setSyncMessage('')} className="ml-auto text-green-500 hover:text-green-700">✕</button>
           </div>
         )}
 

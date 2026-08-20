@@ -1,156 +1,41 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import NavBar from '../components/NavBar.jsx'
 import AudioPlayer from '../components/AudioPlayer.jsx'
 import ObservationPanel from '../components/ObservationPanel.jsx'
 import SectionVerifier from '../components/SectionVerifier.jsx'
-import { getObservation, getAudioFiles, saveReview, releaseClaim, audioStreamUrl, getReviewByFile } from '../api/client.js'
+import {
+  getObservation,
+  getAudioFiles,
+  saveReview,
+  releaseClaim,
+  audioStreamUrl,
+  getReviewByFile,
+  getInstrumentConfig,
+} from '../api/client.js'
 
-// ─── Section configuration ──────────────────────────────────────────────────
-// 18 sections grouped by subject. Customize item lists to match your survey variables.
+const DEFAULT_INSTRUMENT = 'egra_egma'
 
-const SECTION_CONFIG = {
-  // ── Urdu ────────────────────────────────────────────────────────────────
-  listcomp_urd: {
-    label: 'Listening Comprehension (Urdu)',
-    group: 'Urdu',
-    verifyFields: [{ key: 'listcomp_numcorrect_urd', label: 'Number Correct' }],
-  },
-  letterid_urd: {
-    label: 'Letter Identification (Urdu)',
-    group: 'Urdu',
-    verifyFields: [
-      { key: 'lid_reading_correct_urd', label: 'Letters Correct' },
-      { key: 'lid_reading_attempted_urd', label: 'Letters Attempted' },
-    ],
-  },
-  idwrd_urd: {
-    label: 'Word Reading (Urdu)',
-    group: 'Urdu',
-    verifyFields: [
-      { key: 'idwrd_60s_correct_urd', label: 'Words Correct (60s)' },
-      { key: 'idwrd_60s_attempted_urd', label: 'Words Attempted (60s)' },
-    ],
-  },
-  orf_urd: {
-    label: 'Oral Reading Fluency (Urdu)',
-    group: 'Urdu',
-    verifyFields: [
-      { key: 'orf_60s_correct_urd', label: 'Words Correct (60s)' },
-      { key: 'orf_60s_attempted_urd', label: 'Words Attempted (60s)' },
-      { key: 'orf_reading_sentences_urd', label: 'Sentences Read' },
-    ],
-  },
-  rdcomp_urd: {
-    label: 'Reading Comprehension (Urdu)',
-    group: 'Urdu',
-    verifyFields: [{ key: 'rdcomp_numcorrect_urd', label: 'Number Correct' }],
-  },
-
-  // ── English ──────────────────────────────────────────────────────────────
-  listcomp_eng: {
-    label: 'Listening Comprehension (English)',
-    group: 'English',
-    verifyFields: [{ key: 'listcomp_numcorrect_eng', label: 'Number Correct' }],
-  },
-  letterid_eng: {
-    label: 'Letter Identification (English)',
-    group: 'English',
-    verifyFields: [
-      { key: 'lid_reading_correct_eng', label: 'Letters Correct' },
-      { key: 'lid_reading_attempted_eng', label: 'Letters Attempted' },
-    ],
-  },
-  pw_eng: {
-    label: 'Pseudoword Reading (English)',
-    group: 'English',
-    verifyFields: [
-      { key: 'pw_60s_correct_eng', label: 'Words Correct (60s)' },
-      { key: 'pw_60s_attempted_eng', label: 'Words Attempted (60s)' },
-    ],
-  },
-  idwrd_eng: {
-    label: 'Word Reading (English)',
-    group: 'English',
-    verifyFields: [
-      { key: 'idwrd_60s_correct_eng', label: 'Words Correct (60s)' },
-      { key: 'idwrd_60s_attempted_eng', label: 'Words Attempted (60s)' },
-    ],
-  },
-  orf_eng: {
-    label: 'Oral Reading Fluency (English)',
-    group: 'English',
-    verifyFields: [
-      { key: 'orf_60s_correct_eng', label: 'Words Correct (60s)' },
-      { key: 'orf_60s_attempted_eng', label: 'Words Attempted (60s)' },
-      { key: 'orf_reading_sentences_eng', label: 'Sentences Read' },
-    ],
-  },
-  rdcomp_eng: {
-    label: 'Reading Comprehension (English)',
-    group: 'English',
-    verifyFields: [{ key: 'rdcomp_numcorrect_eng', label: 'Number Correct' }],
-  },
-
-  // ── Math ─────────────────────────────────────────────────────────────────
-  idnummag: {
-    label: 'Number Identification',
-    group: 'Math',
-    verifyFields: [{ key: 'idnummag_numcorrect', label: 'Number Correct' }],
-  },
-  numrep: {
-    label: 'Number Representation',
-    group: 'Math',
-    verifyFields: [{ key: 'numrep_numcorrect', label: 'Number Correct' }],
-  },
-  blfluency_l1: {
-    label: 'Basic Letter Fluency (L1)',
-    group: 'Math',
-    verifyFields: [{ key: 'blfl1_s1ore', label: 'Score' }],
-  },
-  blfluency_l4: {
-    label: 'Basic Letter Fluency (L4)',
-    group: 'Math',
-    verifyFields: [{ key: 'blfl4_s1ore', label: 'Score' }],
-  },
-  computation: {
-    label: 'Computation',
-    group: 'Math',
-    verifyFields: [{ key: 'comp_numcorrect', label: 'Number Correct' }],
-  },
-  word_problems: {
-    label: 'Word Problems',
-    group: 'Math',
-    verifyFields: [{ key: 'wrdpblm_numcorrect', label: 'Number Correct' }],
-  },
-  patterns: {
-    label: 'Patterns',
-    group: 'Math',
-    verifyFields: [{ key: 'patterns_numcorrect', label: 'Number Correct' }],
-  },
+const GROUP_COLORS = {
+  Urdu: 'bg-purple-100 text-purple-700',
+  English: 'bg-blue-100 text-blue-700',
+  Math: 'bg-emerald-100 text-emerald-700',
+  'General Knowledge': 'bg-amber-100 text-amber-700',
 }
 
-const SECTION_KEYS = Object.keys(SECTION_CONFIG)
-const GROUPS = ['Urdu', 'English', 'Math']
-
 function GroupLabel({ group }) {
-  const colors = {
-    Urdu: 'bg-purple-100 text-purple-700',
-    English: 'bg-blue-100 text-blue-700',
-    Math: 'bg-emerald-100 text-emerald-700',
-  }
   return (
-    <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${colors[group] || 'bg-slate-100 text-slate-600'}`}>
+    <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${GROUP_COLORS[group] || 'bg-slate-100 text-slate-600'}`}>
       {group}
     </span>
   )
 }
 
-function computeCompliance(verdicts, selectedSections) {
+function computeCompliance(verdicts, selectedSections, sectionConfig) {
   let totalCorrect = 0
   let totalVerdicted = 0
   for (const sectionKey of selectedSections) {
-    const fields = SECTION_CONFIG[sectionKey]?.verifyFields || []
+    const fields = sectionConfig[sectionKey]?.verifyFields || []
     for (const { key } of fields) {
       const v = verdicts[sectionKey]?.[key]
       if (v === 'correct' || v === 'incorrect') {
@@ -163,20 +48,37 @@ function computeCompliance(verdicts, selectedSections) {
   return Math.round((totalCorrect / totalVerdicted) * 100)
 }
 
+// For grade-banded instruments (ASER), resolves which section gradeBand an
+// observation belongs to so only the relevant sections are offered. Returns
+// null for non-grade-banded instruments or when grade can't be resolved
+// (in which case all sections stay visible — safer than hiding everything).
+function resolveGradeBand(instrumentConfig, observation) {
+  if (!instrumentConfig?.gradeField || !instrumentConfig?.gradeBands || !observation) return null
+  const gradeNum = parseInt(observation[instrumentConfig.gradeField], 10)
+  if (isNaN(gradeNum)) return null
+  for (const [band, grades] of Object.entries(instrumentConfig.gradeBands)) {
+    if (grades.includes(gradeNum)) return band
+  }
+  return null
+}
+
 export default function ReviewScreen() {
   const { fileId } = useParams()
+  const [searchParams] = useSearchParams()
+  const instrument = searchParams.get('instrument') || DEFAULT_INSTRUMENT
   const navigate = useNavigate()
 
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [instrumentConfig, setInstrumentConfig] = useState(null)
   const [observation, setObservation] = useState(null)
   const [audioFile, setAudioFile] = useState(null)
   const [submitting, setSaving] = useState(false)
   const [submitDone, setSubmitDone] = useState(false)
   const [isCompleted, setIsCompleted] = useState(false)
 
-  // Which sections the officer wants to verify — all on by default
-  const [selectedSections, setSelectedSections] = useState(SECTION_KEYS)
+  // Which sections the officer wants to verify
+  const [selectedSections, setSelectedSections] = useState([])
 
   // Verdicts: { [sectionKey]: { [itemKey]: 'correct' | 'incorrect' | null, __comment_item: '...' } }
   const [verdicts, setVerdicts] = useState({})
@@ -189,11 +91,36 @@ export default function ReviewScreen() {
 
   const streamUrl = useMemo(() => audioStreamUrl(fileId), [fileId])
 
+  const sectionConfig = instrumentConfig?.sections || {}
+  const gradeBand = useMemo(() => resolveGradeBand(instrumentConfig, observation), [instrumentConfig, observation])
+
+  // Sections relevant to this observation — for grade-banded instruments,
+  // only the matching grade band's sections; otherwise all sections.
+  const visibleSectionKeys = useMemo(() => {
+    const keys = Object.keys(sectionConfig)
+    if (!gradeBand) return keys
+    return keys.filter(k => !sectionConfig[k].gradeBand || sectionConfig[k].gradeBand === gradeBand)
+  }, [sectionConfig, gradeBand])
+
+  const groups = useMemo(() => {
+    const seen = []
+    for (const k of visibleSectionKeys) {
+      const g = sectionConfig[k]?.group
+      if (g && !seen.includes(g)) seen.push(g)
+    }
+    return seen
+  }, [visibleSectionKeys, sectionConfig])
+
   const loadData = useCallback(async () => {
     setLoading(true)
     setError('')
     try {
-      const filesRes = await getAudioFiles()
+      const [configRes, filesRes] = await Promise.all([
+        getInstrumentConfig(instrument),
+        getAudioFiles(instrument),
+      ])
+      setInstrumentConfig(configRes.data)
+
       const files = filesRes.data || []
       const file = files.find(f => f.audio_file_id === fileId)
       if (!file) {
@@ -203,10 +130,21 @@ export default function ReviewScreen() {
       }
       setAudioFile(file)
 
+      let visibleKeysForDefault = Object.keys(configRes.data.sections || {})
+
       if (file.unique_id_calc) {
-        const obsRes = await getObservation(file.unique_id_calc)
+        const obsRes = await getObservation(file.unique_id_calc, instrument, file.audio_filename_segment || undefined)
         setObservation(obsRes.data)
+        const band = resolveGradeBand(configRes.data, obsRes.data)
+        if (band) {
+          visibleKeysForDefault = visibleKeysForDefault.filter(
+            k => !configRes.data.sections[k].gradeBand || configRes.data.sections[k].gradeBand === band
+          )
+        }
       }
+
+      // Default selection: all sections relevant to this observation
+      setSelectedSections(visibleKeysForDefault)
 
       // Restore draft if present; otherwise check for a completed review
       if (file.draft_data) {
@@ -235,7 +173,7 @@ export default function ReviewScreen() {
     } finally {
       setLoading(false)
     }
-  }, [fileId])
+  }, [fileId, instrument])
 
   useEffect(() => {
     loadData()
@@ -265,6 +203,7 @@ export default function ReviewScreen() {
         unique_id_calc: audioFile?.unique_id_calc,
         audio_filename: audioFile?.audio_filename,
         status: 'draft',
+        instrument,
         sections_reviewed: selectedSections,
         verdicts,
         section_comments: sectionComments,
@@ -289,6 +228,7 @@ export default function ReviewScreen() {
         unique_id_calc: audioFile?.unique_id_calc,
         audio_filename: audioFile?.audio_filename,
         status: 'complete',
+        instrument,
         sections_reviewed: selectedSections,
         verdicts,
         section_comments: sectionComments,
@@ -305,7 +245,7 @@ export default function ReviewScreen() {
   async function handleRelease() {
     if (!window.confirm('Release your claim on this file? Your draft will be lost.')) return
     try {
-      await releaseClaim(audioFile?.unique_id_calc)
+      await releaseClaim(audioFile?.audio_filename)
       navigate('/')
     } catch (err) {
       setError(err.response?.data?.message || 'Failed to release claim.')
@@ -313,8 +253,8 @@ export default function ReviewScreen() {
   }
 
   const compliancePct = useMemo(
-    () => computeCompliance(verdicts, selectedSections),
-    [verdicts, selectedSections]
+    () => computeCompliance(verdicts, selectedSections, sectionConfig),
+    [verdicts, selectedSections, sectionConfig]
   )
 
   if (loading) {
@@ -400,7 +340,7 @@ export default function ReviewScreen() {
           <AudioPlayer src={streamUrl} />
 
           {/* Observation info */}
-          <ObservationPanel observation={observation} />
+          <ObservationPanel observation={observation} displayFields={instrumentConfig?.displayFields} />
 
           {/* Release claim */}
           <button
@@ -458,9 +398,14 @@ export default function ReviewScreen() {
             {/* Section selector */}
             <div className="bg-white border border-slate-200 rounded-xl p-4 mb-4 shadow-sm">
               <h2 className="text-sm font-semibold text-slate-800 mb-3">Select Sections to Verify</h2>
+              {gradeBand && (
+                <p className="text-xs text-slate-400 mb-3">
+                  Showing sections for Grade {gradeBand} based on this observation's recorded grade.
+                </p>
+              )}
               <div className="space-y-3">
-                {GROUPS.map(group => {
-                  const groupSections = SECTION_KEYS.filter(k => SECTION_CONFIG[k].group === group)
+                {groups.map(group => {
+                  const groupSections = visibleSectionKeys.filter(k => sectionConfig[k].group === group)
                   return (
                     <div key={group}>
                       <div className="flex items-center gap-2 mb-2">
@@ -470,9 +415,9 @@ export default function ReviewScreen() {
                       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                         {groupSections.map(sectionKey => {
                           const isSelected = selectedSections.includes(sectionKey)
-                          const { label } = SECTION_CONFIG[sectionKey]
+                          const { label } = sectionConfig[sectionKey]
                           const sectionVerdicts = verdicts[sectionKey] || {}
-                          const fields = SECTION_CONFIG[sectionKey].verifyFields || []
+                          const fields = sectionConfig[sectionKey].verifyFields || []
                           const verdictedCount = fields.filter(({ key }) =>
                             sectionVerdicts[key] === 'correct' || sectionVerdicts[key] === 'incorrect'
                           ).length
@@ -520,17 +465,19 @@ export default function ReviewScreen() {
               </div>
             ) : (
               selectedSections.map(sectionKey => (
-                <SectionVerifier
-                  key={sectionKey}
-                  sectionKey={sectionKey}
-                  sectionConfig={SECTION_CONFIG[sectionKey]}
-                  observation={observation}
-                  verdicts={verdicts[sectionKey] || {}}
-                  onVerdictsChange={(v) => handleVerdictsChange(sectionKey, v)}
-                  comment={sectionComments[sectionKey] || ''}
-                  onCommentChange={(c) => handleSectionCommentChange(sectionKey, c)}
-                  readOnly={isCompleted}
-                />
+                sectionConfig[sectionKey] && (
+                  <SectionVerifier
+                    key={sectionKey}
+                    sectionKey={sectionKey}
+                    sectionConfig={sectionConfig[sectionKey]}
+                    observation={observation}
+                    verdicts={verdicts[sectionKey] || {}}
+                    onVerdictsChange={(v) => handleVerdictsChange(sectionKey, v)}
+                    comment={sectionComments[sectionKey] || ''}
+                    onCommentChange={(c) => handleSectionCommentChange(sectionKey, c)}
+                    readOnly={isCompleted}
+                  />
+                )
               ))
             )}
 

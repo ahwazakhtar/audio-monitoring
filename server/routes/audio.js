@@ -5,35 +5,44 @@ const authMiddleware = require('../middleware/auth');
 const { listAudioFiles, streamFile } = require('../services/googleDrive');
 const { getAllObservations, extractAudioFilenameSegment } = require('../services/csvLoader');
 const { getSessionState } = require('../services/googleSheets');
+const { getInstrument } = require('../config/instruments');
 
 const router = express.Router();
 
 /**
- * GET /api/audio/files
+ * GET /api/audio/files?instrument=
  * Auth required.
- * Lists all files in the Drive folder and attempts to match each to an observation.
+ * Lists all files in the instrument's Drive folder and attempts to match
+ * each to an observation in that instrument's CSV.
  *
  * Matching logic:
  *   Drive filename.contains(audio_filename_segment extracted from audio_comp)
  */
 router.get('/files', authMiddleware, async (req, res) => {
   try {
+    const instrument = getInstrument(req.query.instrument);
+    const folderId = process.env[instrument.driveFolderIdEnvVar];
+
     const [driveFiles, observations, sessionState] = await Promise.all([
-      listAudioFiles(),
-      getAllObservations(),
+      listAudioFiles(folderId),
+      getAllObservations(instrument.key),
       getSessionState(),
     ]);
 
-    // Build draft_data lookup keyed by unique_id_calc
-    const draftMap = new Map();
-    for (const draft of sessionState.drafts || []) {
-      if (draft.unique_id_calc) {
-        draftMap.set(draft.unique_id_calc, draft.draft_data);
-      }
-    }
+    // Scope session state to this instrument (defense in depth — the shared
+    // Reviews/Claims tabs hold rows for every instrument).
+    const drafts = (sessionState.drafts || []).filter((d) => (d.instrument || 'egra_egma') === instrument.key);
+    const completed = (sessionState.completed || []).filter((r) => (r.instrument || 'egra_egma') === instrument.key);
+    const claimed = (sessionState.claimed || []).filter((c) => (c.instrument || 'egra_egma') === instrument.key);
 
-    const completedMap = new Map((sessionState.completed || []).map((r) => [r.unique_id_calc, r]));
-    const claimedSet = new Set((sessionState.claimed || []).map((c) => c.unique_id_calc));
+    // Claims/reviews are keyed by audio_filename — the true per-submission
+    // key (unique_id_calc has confirmed duplicate groups within a CSV).
+    const draftMap = new Map();
+    for (const draft of drafts) {
+      if (draft.audio_filename) draftMap.set(draft.audio_filename, draft.draft_data);
+    }
+    const completedMap = new Map(completed.map((r) => [r.audio_filename, r]));
+    const claimedMap = new Map(claimed.map((c) => [c.audio_filename, c]));
 
     // Build a lookup: audio_filename_segment -> unique_id_calc
     // (segment is the "AA_<UUID>_enumerator.m4a" part)
@@ -61,13 +70,15 @@ router.get('/files', authMiddleware, async (req, res) => {
       }
 
       const obs = unique_id_calc ? obsMap.get(unique_id_calc) : null;
-      const completedReview = unique_id_calc ? completedMap.get(unique_id_calc) : null;
+      const completedReview = completedMap.get(file.filename);
+      const claim = claimedMap.get(file.filename);
 
-      const status = unique_id_calc
-        ? completedReview ? 'complete'
-          : draftMap.has(unique_id_calc) ? 'draft'
-          : claimedSet.has(unique_id_calc) ? 'claimed'
-          : 'available'
+      const status = completedReview
+        ? 'complete'
+        : draftMap.has(file.filename)
+        ? 'draft'
+        : claim
+        ? 'claimed'
         : 'available';
 
       return {
@@ -79,7 +90,7 @@ router.get('/files', authMiddleware, async (req, res) => {
         mimeType: file.mimeType,
         size: file.size,
         status,
-        draft_data: unique_id_calc ? (draftMap.get(unique_id_calc) || null) : null,
+        draft_data: draftMap.get(file.filename) || null,
         reviewer: completedReview ? completedReview.reviewer : null,
         review_timestamp: completedReview ? completedReview.review_timestamp : null,
       };

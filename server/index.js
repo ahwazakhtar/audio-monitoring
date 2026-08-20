@@ -6,12 +6,15 @@ const express = require('express');
 const cors = require('cors');
 
 const { ensureSheetSetup } = require('./services/googleSheets');
+const { listInstruments } = require('./config/instruments');
+const { getAllObservations } = require('./services/csvLoader');
 
 const authRouter = require('./routes/auth');
 const observationsRouter = require('./routes/observations');
 const audioRouter = require('./routes/audio');
 const reviewsRouter = require('./routes/reviews');
 const analyticsRouter = require('./routes/analytics');
+const instrumentsRouter = require('./routes/instruments');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -74,6 +77,7 @@ app.use('/api/audio', audioRouter);
 app.use('/api', reviewsRouter);
 
 app.use('/api/analytics', analyticsRouter);
+app.use('/api/instruments', instrumentsRouter);
 
 // ---------------------------------------------------------------------------
 // 404 catch-all
@@ -101,6 +105,19 @@ async function start() {
   } catch (err) {
     console.error('WARNING: Google Sheets setup failed:', err.message);
     console.error('The server will start anyway — sheet operations may fail at runtime.');
+  }
+
+  // Sync each instrument's master data file from Drive before serving
+  // requests, so the first Dashboard load doesn't stall on a cold download.
+  // A per-instrument failure here doesn't block the others or the server —
+  // csvLoader falls back to whatever's already on disk, or an empty list.
+  for (const { key, label } of listInstruments()) {
+    try {
+      const observations = await getAllObservations(key);
+      console.log(`Synced "${label}" data from Drive: ${observations.length} observations.`);
+    } catch (err) {
+      console.error(`WARNING: failed to load "${label}" data:`, err.message);
+    }
   }
 
   app.listen(PORT, () => {

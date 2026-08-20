@@ -3,13 +3,14 @@
 const fs = require('fs');
 const path = require('path');
 const Papa = require('papaparse');
+const { getInstrument } = require('../config/instruments');
+const { downloadFileToPath } = require('./googleDrive');
 
-// Cache only summary fields — avoids holding 1000+ columns × 19K rows in memory
-let _summaries = null;       // array of summary objects
-let _summaryById = null;     // Map<unique_id_calc, summary>
-let _loadPromise = null;     // deduplicates concurrent startup calls
-
-const SUMMARY_FIELDS = [
+// Canonical summary field names — every instrument's fieldMap resolves these
+// to that instrument's actual CSV column names, so downstream code (routes,
+// client) can keep using one consistent set of field names regardless of
+// which instrument produced the row.
+const CANONICAL_SUMMARY_FIELDS = [
   'unique_id_calc',
   'enumerator_name',
   'school_name',
@@ -19,61 +20,147 @@ const SUMMARY_FIELDS = [
   'audio_comp',
 ];
 
-function getCsvPath() {
-  return path.resolve(__dirname, '..', process.env.CSV_PATH || '../EGRA_EGMA_Combine_WIDE.csv');
+// Per-instrument cache: instrumentKey -> { summaries, summaryById, loadPromise, syncPromise }
+// Avoids holding 1000+ columns x thousands of rows in memory per instrument —
+// only summary fields are cached; full rows are streamed on demand.
+const _cache = new Map();
+
+function getState(instrumentKey) {
+  if (!_cache.has(instrumentKey)) {
+    _cache.set(instrumentKey, { summaries: null, summaryById: null, loadPromise: null, syncPromise: null });
+  }
+  return _cache.get(instrumentKey);
 }
 
 /**
- * Streams the CSV and builds the summary cache.
- * Called once; subsequent calls return the already-resolved promise.
+ * Downloads the instrument's master data file from Drive into its local
+ * csvPath (the local file is a cache — Drive is the source of truth). Memoized
+ * per instrument per process, so repeated calls (getAllObservations,
+ * getObservation) only trigger one download. A failed sync falls back to
+ * whatever's already at csvPath rather than blocking — see ensureLoaded/
+ * getObservation's own missing-file handling for what happens if nothing's
+ * there either. Call refreshInstrumentData() to force a fresh sync.
  */
-function ensureLoaded() {
-  if (_summaries !== null) return Promise.resolve();
-  if (_loadPromise) return _loadPromise;
+function syncFromDrive(instrumentConfig) {
+  const state = getState(instrumentConfig.key);
+  if (state.syncPromise) return state.syncPromise;
 
-  _loadPromise = new Promise((resolve, reject) => {
-    const csvPath = getCsvPath();
+  state.syncPromise = (async () => {
+    const fileId = instrumentConfig.dataFileIdEnvVar && process.env[instrumentConfig.dataFileIdEnvVar];
+    const csvPath = getCsvPath(instrumentConfig);
+    if (!fileId || !csvPath) return;
 
-    if (!fs.existsSync(csvPath)) {
-      return reject(new Error(`CSV file not found at: ${csvPath}`));
+    try {
+      await downloadFileToPath(fileId, csvPath);
+      console.log(`csvLoader: synced latest data from Drive for instrument "${instrumentConfig.key}"`);
+    } catch (err) {
+      console.error(
+        `csvLoader: Drive sync failed for instrument "${instrumentConfig.key}" — falling back to local file if present:`,
+        err.message
+      );
     }
+  })();
 
-    const summaries = [];
-    const stream = fs.createReadStream(csvPath, { encoding: 'utf8' });
+  return state.syncPromise;
+}
 
-    Papa.parse(stream, {
-      header: true,
-      skipEmptyLines: true,
-      dynamicTyping: false,
-      step(results) {
-        const row = results.data;
-        if (!row['unique_id_calc']) return;
-        const summary = {};
-        for (const field of SUMMARY_FIELDS) {
-          summary[field] = row[field] || '';
-        }
-        summary.audio_filename_segment = extractAudioFilenameSegment(row['audio_comp']);
-        summaries.push(summary);
-      },
-      complete() {
-        _summaries = summaries;
-        _summaryById = new Map(summaries.map((s) => [s.unique_id_calc, s]));
-        console.log(`CSV loaded: ${_summaries.length} observations (summary fields only)`);
-        resolve();
-      },
-      error(err) {
-        _loadPromise = null; // allow retry on next request
-        reject(err);
-      },
+function getCsvPath(instrumentConfig) {
+  const primary = instrumentConfig.csvPathEnvVar && process.env[instrumentConfig.csvPathEnvVar];
+  const fallback = instrumentConfig.csvPathFallbackEnvVar && process.env[instrumentConfig.csvPathFallbackEnvVar];
+  const configured = primary || fallback;
+  if (!configured) return null;
+  return path.resolve(__dirname, '..', configured);
+}
+
+function fieldMapFor(instrumentConfig) {
+  return instrumentConfig.fieldMap || {};
+}
+
+/**
+ * Syncs from Drive (if configured), then streams the instrument's CSV and
+ * builds the summary cache. Called once per instrument per process;
+ * subsequent calls return the resolved promise — use refreshInstrumentData()
+ * to force a re-sync/re-parse mid-session. A missing/misconfigured CSV path
+ * fails softly (empty list + warning) rather than rejecting, since instrument
+ * selection is a first-class UI flow — one instrument not being wired up yet
+ * shouldn't break the others.
+ */
+function ensureLoaded(instrumentConfig) {
+  const state = getState(instrumentConfig.key);
+  if (state.summaries !== null) return Promise.resolve();
+  if (state.loadPromise) return state.loadPromise;
+
+  state.loadPromise = (async () => {
+    await syncFromDrive(instrumentConfig);
+
+    await new Promise((resolve) => {
+      const csvPath = getCsvPath(instrumentConfig);
+
+      if (!csvPath || !fs.existsSync(csvPath)) {
+        console.warn(
+          `csvLoader: no CSV found for instrument "${instrumentConfig.key}" (resolved path: ${csvPath || 'unset'}) — serving an empty observation list.`
+        );
+        state.summaries = [];
+        state.summaryById = new Map();
+        return resolve();
+      }
+
+      const fieldMap = fieldMapFor(instrumentConfig);
+      const idColumn = fieldMap.unique_id_calc || 'unique_id_calc';
+      const summaries = [];
+      const stream = fs.createReadStream(csvPath, { encoding: 'utf8' });
+
+      Papa.parse(stream, {
+        header: true,
+        skipEmptyLines: true,
+        dynamicTyping: false,
+        step(results) {
+          const row = results.data;
+          if (!row[idColumn]) return;
+          const summary = {};
+          for (const canonicalField of CANONICAL_SUMMARY_FIELDS) {
+            const actualColumn = fieldMap[canonicalField] || canonicalField;
+            summary[canonicalField] = row[actualColumn] || '';
+          }
+          summary.audio_filename_segment = extractAudioFilenameSegment(summary.audio_comp);
+          summaries.push(summary);
+        },
+        complete() {
+          state.summaries = summaries;
+          state.summaryById = new Map(summaries.map((s) => [s.unique_id_calc, s]));
+          console.log(`csvLoader: loaded ${summaries.length} observations for instrument "${instrumentConfig.key}"`);
+          resolve();
+        },
+        error(err) {
+          console.error(`csvLoader: failed to load CSV for instrument "${instrumentConfig.key}":`, err.message);
+          state.summaries = [];
+          state.summaryById = new Map();
+          resolve();
+        },
+      });
     });
-  });
+  })();
 
-  return _loadPromise;
+  return state.loadPromise;
+}
+
+/**
+ * Forces a fresh Drive sync + re-parse for one instrument, discarding any
+ * cached state. Used by the manual "refresh data" action so officers can
+ * pull the latest export without waiting for a server restart.
+ * Returns the number of observations loaded.
+ */
+async function refreshInstrumentData(instrumentKey) {
+  const instrumentConfig = getInstrument(instrumentKey);
+  _cache.delete(instrumentConfig.key);
+  await ensureLoaded(instrumentConfig);
+  return getState(instrumentConfig.key).summaries.length;
 }
 
 /**
  * Extracts the `file=` query parameter from a SurveyCTO audio_comp URL.
- * Returns null if not parseable.
+ * Returns null if not parseable. Instrument-agnostic — both EGRA/EGMA and
+ * ASER use the same SurveyCTO "audio audit" URL shape.
  */
 function extractAudioFilenameSegment(audio_comp) {
   if (!audio_comp || typeof audio_comp !== 'string') return null;
@@ -95,36 +182,67 @@ function extractAudioFilenameSegment(audio_comp) {
 }
 
 /**
- * Returns summary objects for all observations (key fields + audio_filename_segment).
+ * Returns summary objects for all observations of one instrument (key fields
+ * + audio_filename_segment, canonical field names regardless of instrument).
  */
-async function getAllObservations() {
-  await ensureLoaded();
-  return _summaries;
+async function getAllObservations(instrumentKey) {
+  const instrumentConfig = getInstrument(instrumentKey);
+  await ensureLoaded(instrumentConfig);
+  return getState(instrumentConfig.key).summaries;
 }
 
 /**
- * Streams the CSV to find and return the full row for the given unique_id_calc.
- * Does not cache full rows — avoids the memory spike from 1000+ columns × 19K rows.
+ * Streams the instrument's CSV to find and return the full raw row for the
+ * given unique_id_calc. Does not cache full rows — avoids the memory spike
+ * from 1000+ columns x thousands of rows.
+ *
+ * unique_id_calc is not guaranteed unique within a CSV (confirmed duplicate
+ * groups in both EGRA/EGMA and ASER data) — when audioFilenameSegment is
+ * passed, it's used to disambiguate by matching the row whose audio_comp URL
+ * contains that exact segment; otherwise the first matching row wins (same
+ * behavior as before this change).
  */
-function getObservation(unique_id_calc) {
+async function getObservation(instrumentKey, uniqueIdCalc, audioFilenameSegment) {
+  const instrumentConfig = getInstrument(instrumentKey);
+  const fieldMap = fieldMapFor(instrumentConfig);
+  const idColumn = fieldMap.unique_id_calc || 'unique_id_calc';
+  const audioColumn = fieldMap.audio_comp || 'audio_comp';
+
+  // Synced at most once per instrument per process (memoized) — cheap to call
+  // even when getAllObservations has already triggered it.
+  await syncFromDrive(instrumentConfig);
+
   return new Promise((resolve, reject) => {
-    const csvPath = getCsvPath();
+    const csvPath = getCsvPath(instrumentConfig);
+    if (!csvPath || !fs.existsSync(csvPath)) {
+      return resolve(null);
+    }
+
     const stream = fs.createReadStream(csvPath, { encoding: 'utf8' });
-    let found = false;
+    let firstMatch = null;
+    let segmentMatch = null;
 
     Papa.parse(stream, {
       header: true,
       skipEmptyLines: true,
       dynamicTyping: false,
       step(results, parser) {
-        if (results.data['unique_id_calc'] === unique_id_calc) {
-          found = true;
-          resolve(results.data);
+        const row = results.data;
+        if (row[idColumn] !== uniqueIdCalc) return;
+        if (!firstMatch) firstMatch = row;
+
+        if (!audioFilenameSegment) {
+          parser.abort();
+          return;
+        }
+        const rowSegment = extractAudioFilenameSegment(row[audioColumn]);
+        if (rowSegment === audioFilenameSegment) {
+          segmentMatch = row;
           parser.abort();
         }
       },
       complete() {
-        if (!found) resolve(null);
+        resolve(segmentMatch || firstMatch || null);
       },
       error(err) {
         reject(err);
@@ -137,4 +255,5 @@ module.exports = {
   getAllObservations,
   getObservation,
   extractAudioFilenameSegment,
+  refreshInstrumentData,
 };

@@ -13,6 +13,7 @@ const SECTIONS = {
       'listcomp_inf2_urd',
     ],
     summaryFields: ['listcomp_numcorrect_urd', 'listcomp_percorrect_urd'],
+    verifyFields: [{ key: 'listcomp_numcorrect_urd', label: 'Number Correct' }],
   },
   letterid_urd: {
     label: 'Letter Identification (Urdu)',
@@ -23,12 +24,20 @@ const SECTIONS = {
       'lid_reading_attempted_urd',
       'lid_reading_score_urd',
     ],
+    verifyFields: [
+      { key: 'lid_reading_correct_urd', label: 'Letters Correct' },
+      { key: 'lid_reading_attempted_urd', label: 'Letters Attempted' },
+    ],
   },
   idwrd_urd: {
     label: 'Word Reading (Urdu)',
     group: 'Urdu',
     items: Array.from({ length: 50 }, (_, i) => `idwrd_reading_urd_${i + 1}`),
     summaryFields: ['idwrd_60s_correct_urd', 'idwrd_60s_attempted_urd'],
+    verifyFields: [
+      { key: 'idwrd_60s_correct_urd', label: 'Words Correct (60s)' },
+      { key: 'idwrd_60s_attempted_urd', label: 'Words Attempted (60s)' },
+    ],
   },
   orf_urd: {
     label: 'Oral Reading Fluency (Urdu)',
@@ -38,6 +47,11 @@ const SECTIONS = {
       'orf_60s_correct_urd',
       'orf_60s_attempted_urd',
       'orf_reading_sentences_urd',
+    ],
+    verifyFields: [
+      { key: 'orf_60s_correct_urd', label: 'Words Correct (60s)' },
+      { key: 'orf_60s_attempted_urd', label: 'Words Attempted (60s)' },
+      { key: 'orf_reading_sentences_urd', label: 'Sentences Read' },
     ],
   },
   rdcomp_urd: {
@@ -52,6 +66,7 @@ const SECTIONS = {
       'rdcomp_inf2_urd',
     ],
     summaryFields: ['rdcomp_numcorrect_urd', 'rdcomp_percorrect_urd'],
+    verifyFields: [{ key: 'rdcomp_numcorrect_urd', label: 'Number Correct' }],
   },
   listcomp_eng: {
     label: 'Listening Comprehension (English)',
@@ -65,6 +80,7 @@ const SECTIONS = {
       'listcomp_inf2_eng',
     ],
     summaryFields: ['listcomp_numcorrect_eng', 'listcomp_percorrect_eng'],
+    verifyFields: [{ key: 'listcomp_numcorrect_eng', label: 'Number Correct' }],
   },
   letterid_eng: {
     label: 'Letter Identification (English)',
@@ -75,18 +91,30 @@ const SECTIONS = {
       'lid_reading_attempted_eng',
       'lid_reading_score_eng',
     ],
+    verifyFields: [
+      { key: 'lid_reading_correct_eng', label: 'Letters Correct' },
+      { key: 'lid_reading_attempted_eng', label: 'Letters Attempted' },
+    ],
   },
   pw_eng: {
     label: 'Pseudoword Reading (English)',
     group: 'English',
     items: Array.from({ length: 50 }, (_, i) => `pw_reading_eng_${i + 1}`),
     summaryFields: ['pw_60s_correct_eng', 'pw_60s_attempted_eng'],
+    verifyFields: [
+      { key: 'pw_60s_correct_eng', label: 'Words Correct (60s)' },
+      { key: 'pw_60s_attempted_eng', label: 'Words Attempted (60s)' },
+    ],
   },
   idwrd_eng: {
     label: 'Word Reading (English)',
     group: 'English',
     items: Array.from({ length: 50 }, (_, i) => `idwrd_reading_eng_${i + 1}`),
     summaryFields: ['idwrd_60s_correct_eng', 'idwrd_60s_attempted_eng'],
+    verifyFields: [
+      { key: 'idwrd_60s_correct_eng', label: 'Words Correct (60s)' },
+      { key: 'idwrd_60s_attempted_eng', label: 'Words Attempted (60s)' },
+    ],
   },
   orf_eng: {
     label: 'Oral Reading Fluency (English)',
@@ -96,6 +124,11 @@ const SECTIONS = {
       'orf_60s_correct_eng',
       'orf_60s_attempted_eng',
       'orf_reading_sentences_eng',
+    ],
+    verifyFields: [
+      { key: 'orf_60s_correct_eng', label: 'Words Correct (60s)' },
+      { key: 'orf_60s_attempted_eng', label: 'Words Attempted (60s)' },
+      { key: 'orf_reading_sentences_eng', label: 'Sentences Read' },
     ],
   },
   rdcomp_eng: {
@@ -110,6 +143,7 @@ const SECTIONS = {
       'rdcomp_inf2_eng',
     ],
     summaryFields: ['rdcomp_numcorrect_eng', 'rdcomp_percorrect_eng'],
+    verifyFields: [{ key: 'rdcomp_numcorrect_eng', label: 'Number Correct' }],
   },
   idnummag: {
     label: 'Number Identification',
@@ -125,6 +159,7 @@ const SECTIONS = {
       'identify_4b',
     ],
     summaryFields: ['idnummag_numcorrect', 'idnummag_percorrect'],
+    verifyFields: [{ key: 'idnummag_numcorrect', label: 'Number Correct' }],
   },
   numrep: {
     label: 'Number Representation',
@@ -140,18 +175,21 @@ const SECTIONS = {
       'represent_4b',
     ],
     summaryFields: ['numrep_numcorrect', 'numrep_percorrect'],
+    verifyFields: [{ key: 'numrep_numcorrect', label: 'Number Correct' }],
   },
   blfluency_l1: {
     label: 'Basic Letter Fluency (L1)',
     group: 'Math',
     items: Array.from({ length: 20 }, (_, i) => `blfl1_question_ans_${i + 1}`),
     summaryFields: ['blfl1_s1ore'],
+    verifyFields: [{ key: 'blfl1_s1ore', label: 'Score' }],
   },
   blfluency_l4: {
     label: 'Basic Letter Fluency (L4)',
     group: 'Math',
     items: Array.from({ length: 20 }, (_, i) => `blfl4_question_ans_${i + 1}`),
     summaryFields: ['blfl4_s1ore'],
+    verifyFields: [{ key: 'blfl4_s1ore', label: 'Score' }],
   },
   computation: {
     label: 'Computation',
@@ -167,6 +205,7 @@ const SECTIONS = {
       'computation_4b',
     ],
     summaryFields: ['comp_numcorrect', 'comp_percorrect'],
+    verifyFields: [{ key: 'comp_numcorrect', label: 'Number Correct' }],
   },
   word_problems: {
     label: 'Word Problems',
@@ -182,6 +221,7 @@ const SECTIONS = {
       'word_problems_4b',
     ],
     summaryFields: ['wrdpblm_numcorrect', 'wrdpblm_percorrect'],
+    verifyFields: [{ key: 'wrdpblm_numcorrect', label: 'Number Correct' }],
   },
   patterns: {
     label: 'Patterns',
@@ -197,6 +237,7 @@ const SECTIONS = {
       'patterns_4b',
     ],
     summaryFields: ['patterns_numcorrect', 'patterns_percorrect'],
+    verifyFields: [{ key: 'patterns_numcorrect', label: 'Number Correct' }],
   },
 };
 

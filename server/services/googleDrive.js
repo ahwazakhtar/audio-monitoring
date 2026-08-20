@@ -1,9 +1,8 @@
 'use strict';
 
+const fs = require('fs');
 const { google } = require('googleapis');
 const { getAuth } = require('./googleAuth');
-
-const FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID;
 
 async function getDriveClient() {
   const auth = getAuth();
@@ -12,11 +11,11 @@ async function getDriveClient() {
 }
 
 /**
- * Lists all audio files in the configured Google Drive folder.
+ * Lists all audio files in the given Google Drive folder.
  * Returns an array of { fileId, filename, mimeType, size }.
  * Handles pagination to retrieve all files regardless of count.
  */
-async function listAudioFiles() {
+async function listAudioFiles(folderId) {
   const drive = await getDriveClient();
 
   const files = [];
@@ -24,7 +23,7 @@ async function listAudioFiles() {
 
   do {
     const params = {
-      q: `'${FOLDER_ID}' in parents and trashed = false and (mimeType contains 'audio/' or name contains '.m4a' or name contains '.mp3' or name contains '.wav' or name contains '.ogg')`,
+      q: `'${folderId}' in parents and trashed = false and (mimeType contains 'audio/' or name contains '.m4a' or name contains '.mp3' or name contains '.wav' or name contains '.ogg')`,
       fields: 'nextPageToken, files(id, name, mimeType, size)',
       pageSize: 1000,
       orderBy: 'name',
@@ -122,4 +121,28 @@ async function streamFile(fileId, res, rangeHeader) {
   });
 }
 
-module.exports = { listAudioFiles, streamFile };
+/**
+ * Downloads a Drive file's content to a local path. Writes to a temp file
+ * first and renames into place atomically, so a concurrent reader (e.g. the
+ * CSV parser) never sees a partially-written file mid-download.
+ *
+ * @param {string} fileId   - Drive file ID
+ * @param {string} destPath - Local filesystem path to write the file to
+ */
+async function downloadFileToPath(fileId, destPath) {
+  const drive = await getDriveClient();
+  const response = await drive.files.get({ fileId, alt: 'media' }, { responseType: 'stream' });
+
+  const tmpPath = `${destPath}.tmp`;
+  await new Promise((resolve, reject) => {
+    const dest = fs.createWriteStream(tmpPath);
+    response.data.on('error', reject);
+    dest.on('error', reject);
+    dest.on('finish', resolve);
+    response.data.pipe(dest);
+  });
+
+  await fs.promises.rename(tmpPath, destPath);
+}
+
+module.exports = { listAudioFiles, streamFile, downloadFileToPath };

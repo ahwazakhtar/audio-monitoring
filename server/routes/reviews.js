@@ -74,12 +74,13 @@ router.get('/session', authMiddleware, async (req, res) => {
 /**
  * POST /api/claim
  * Auth required.
- * Body: { unique_id_calc, audio_filename, audio_file_id }
+ * Body: { unique_id_calc, audio_filename, audio_file_id, instrument }
  */
 router.post('/claim', authMiddleware, async (req, res) => {
   try {
-    const { unique_id_calc, audio_filename, audio_file_id } = req.body;
+    const { unique_id_calc, audio_filename, audio_file_id, instrument } = req.body;
     const reviewer = req.user.username;
+    const instrumentKey = instrument || 'egra_egma';
 
     if (!unique_id_calc || !audio_filename || !audio_file_id) {
       return res.status(400).json({
@@ -87,21 +88,24 @@ router.post('/claim', authMiddleware, async (req, res) => {
       });
     }
 
-    // Check if already claimed or completed
+    // Check if already claimed or completed. Keyed by audio_filename — the
+    // true per-submission key (unique_id_calc has confirmed duplicate groups
+    // within a CSV, so it can't reliably identify one physical recording).
     const state = await getSessionState();
 
-    if (state.completed.includes(unique_id_calc)) {
+    const alreadyCompleted = state.completed.find((c) => c.audio_filename === audio_filename);
+    if (alreadyCompleted) {
       return res.status(409).json({ error: 'This observation has already been completed' });
     }
 
-    const existingClaim = state.claimed.find((c) => c.unique_id_calc === unique_id_calc);
+    const existingClaim = state.claimed.find((c) => c.audio_filename === audio_filename);
     if (existingClaim) {
       return res.status(409).json({
         error: `This observation is already claimed by ${existingClaim.reviewer}`,
       });
     }
 
-    const existingDraft = state.drafts.find((c) => c.unique_id_calc === unique_id_calc);
+    const existingDraft = state.drafts.find((c) => c.audio_filename === audio_filename);
     if (existingDraft) {
       return res.status(409).json({
         error: `This observation has a draft in progress by ${existingDraft.reviewer}`,
@@ -116,6 +120,7 @@ router.post('/claim', authMiddleware, async (req, res) => {
       claimed_at: new Date().toISOString(),
       status: 'claimed',
       draft_data_json: '',
+      instrument: instrumentKey,
     };
 
     await upsertClaim(claimRecord);
@@ -128,19 +133,19 @@ router.post('/claim', authMiddleware, async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// DELETE /api/claim/:unique_id_calc
+// DELETE /api/claim/:audio_filename
 // ---------------------------------------------------------------------------
 
 /**
- * DELETE /api/claim/:unique_id_calc
+ * DELETE /api/claim/:audio_filename
  * Auth required. Only the owning reviewer can delete their claim.
  */
-router.delete('/claim/:unique_id_calc', authMiddleware, async (req, res) => {
+router.delete('/claim/:audio_filename', authMiddleware, async (req, res) => {
   try {
-    const { unique_id_calc } = req.params;
+    const { audio_filename } = req.params;
     const reviewer = req.user.username;
 
-    const claim = await getClaim(unique_id_calc);
+    const claim = await getClaim(audio_filename);
     if (!claim) {
       return res.status(404).json({ error: 'Claim not found' });
     }
@@ -149,10 +154,10 @@ router.delete('/claim/:unique_id_calc', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'You can only delete your own claims' });
     }
 
-    await deleteClaim(unique_id_calc);
-    return res.json({ success: true, unique_id_calc });
+    await deleteClaim(audio_filename);
+    return res.json({ success: true, audio_filename });
   } catch (err) {
-    console.error('DELETE /claim/:unique_id_calc error:', err);
+    console.error('DELETE /claim/:audio_filename error:', err);
     return res.status(500).json({ error: err.message || 'Failed to delete claim' });
   }
 });
@@ -175,6 +180,7 @@ router.post('/reviews', authMiddleware, async (req, res) => {
       unique_id_calc,
       audio_filename,
       status,
+      instrument,
       sections_reviewed = [],
       verdicts = {},
       section_comments = {},
@@ -182,6 +188,7 @@ router.post('/reviews', authMiddleware, async (req, res) => {
     } = req.body;
 
     const reviewer = req.user.username;
+    const instrumentKey = instrument || 'egra_egma';
 
     if (!unique_id_calc || !audio_filename) {
       return res.status(400).json({ error: 'unique_id_calc and audio_filename are required' });
@@ -198,8 +205,8 @@ router.post('/reviews', authMiddleware, async (req, res) => {
     const review_timestamp = new Date().toISOString();
 
     if (status === 'draft') {
-      // Upsert a draft into the Claims tab
-      const existingClaim = await getClaim(unique_id_calc);
+      // Upsert a draft into the Claims tab (keyed by audio_filename)
+      const existingClaim = await getClaim(audio_filename);
       const claimed_at = existingClaim ? existingClaim.claimed_at : review_timestamp;
       const audio_file_id = existingClaim ? existingClaim.audio_file_id : '';
 
@@ -221,6 +228,7 @@ router.post('/reviews', authMiddleware, async (req, res) => {
         claimed_at,
         status: 'draft',
         draft_data_json: JSON.stringify(draftData),
+        instrument: instrumentKey,
       };
 
       await upsertClaim(claimRecord);
@@ -230,6 +238,7 @@ router.post('/reviews', authMiddleware, async (req, res) => {
         audio_filename,
         reviewer,
         status: 'draft',
+        instrument: instrumentKey,
         overall_compliance_pct,
         flagged,
         sections_reviewed,
@@ -256,12 +265,14 @@ router.post('/reviews', authMiddleware, async (req, res) => {
       overall_comment,
       verdicts_json: JSON.stringify(verdicts),
       comments_json: JSON.stringify(section_comments),
+      instrument: instrumentKey,
     };
 
-    // Append to Reviews tab and remove from Claims tab (in parallel)
+    // Append to Reviews tab and remove from Claims tab (in parallel, both
+    // keyed by audio_filename)
     await Promise.all([
       appendReview(reviewRow),
-      deleteClaim(unique_id_calc),
+      deleteClaim(audio_filename),
     ]);
 
     return res.status(201).json({
@@ -271,6 +282,7 @@ router.post('/reviews', authMiddleware, async (req, res) => {
       reviewer,
       review_timestamp,
       status: 'complete',
+      instrument: instrumentKey,
       sections_reviewed,
       overall_compliance_pct,
       flagged,

@@ -1,6 +1,8 @@
 import React from 'react'
 
-const DISPLAY_FIELDS = [
+// Fallback used only if the caller doesn't pass an instrument-specific
+// displayFields prop (e.g. fetched from GET /api/instruments/:key/config).
+const DEFAULT_DISPLAY_FIELDS = [
   { key: 'unique_id_calc', label: 'Unique ID' },
   { key: 'enumerator_name', label: 'Enumerator' },
   { key: 'school_name', label: 'School' },
@@ -25,7 +27,9 @@ function formatValue(key, value) {
   return String(value)
 }
 
-export default function ObservationPanel({ observation }) {
+export default function ObservationPanel({ observation, displayFields }) {
+  const fields = displayFields && displayFields.length ? displayFields : DEFAULT_DISPLAY_FIELDS
+
   if (!observation) {
     return (
       <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm">
@@ -49,7 +53,7 @@ export default function ObservationPanel({ observation }) {
         Observation Details
       </div>
       <dl className="space-y-2">
-        {DISPLAY_FIELDS.map(({ key, label }) => (
+        {fields.map(({ key, label }) => (
           <div key={key} className="flex justify-between items-start gap-2">
             <dt className="text-xs text-slate-500 font-medium flex-shrink-0 w-28">{label}</dt>
             <dd className="text-xs text-slate-800 font-semibold text-right break-words min-w-0">
